@@ -24,7 +24,7 @@ jobs:
     - name: Trigger contract_terms workflow
       uses: peter-evans/repository-dispatch@v3
       with:
-        token: ${{ secrets.CONTRACT_TERMS_PAT }}
+        token: ${{ secrets.GITHUB_TOKEN }}
         repository: ERMInc/contract_terms
         event-type: document-updated
         client-payload: |
