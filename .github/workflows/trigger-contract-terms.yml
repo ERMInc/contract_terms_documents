@@ -2,7 +2,7 @@ name: Trigger Contract Terms Action
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
@@ -24,7 +24,7 @@ jobs:
     - name: Trigger contract_terms workflow
       uses: peter-evans/repository-dispatch@v3
       with:
-        token: ${{ secrets.CONTRACT_TERMS_PAT }}
+        
         repository: ERMInc/contract_terms
         event-type: document-updated
         client-payload: |
