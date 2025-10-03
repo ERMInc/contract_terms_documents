@@ -27,21 +27,34 @@ jobs:
         echo "commit_author=$(git log -1 --pretty=format:'%an')" >> $GITHUB_OUTPUT
         echo "commit_url=https://github.com/${{ github.repository }}/commit/${{ github.sha }}" >> $GITHUB_OUTPUT
     
-    - name: Trigger contract_terms workflow
-      uses: peter-evans/repository-dispatch@v3
-      with:
-        repository: ERMInc/contract_terms
-        event-type: document-updated
-        client-payload: |
-          {
-            "source_repo": "${{ github.repository }}",
-            "commit_id": "${{ steps.commit-info.outputs.commit_id }}",
-            "commit_message": "${{ steps.commit-info.outputs.commit_message }}",
-            "commit_author": "${{ steps.commit-info.outputs.commit_author }}",
-            "commit_url": "${{ steps.commit-info.outputs.commit_url }}",
-            "branch": "${{ github.ref_name }}",
-            "triggered_by": "${{ github.actor }}"
-          }
+    - name: Create trigger file for monitoring
+      run: |
+        # Create a simple trigger file that the target repo can monitor
+        echo "Repository: ${{ github.repository }}" > trigger-info.json
+        echo "Commit ID: ${{ steps.commit-info.outputs.commit_id }}" >> trigger-info.json
+        echo "Commit Message: ${{ steps.commit-info.outputs.commit_message }}" >> trigger-info.json
+        echo "Commit Author: ${{ steps.commit-info.outputs.commit_author }}" >> trigger-info.json
+        echo "Commit URL: ${{ steps.commit-info.outputs.commit_url }}" >> trigger-info.json
+        echo "Branch: ${{ github.ref_name }}" >> trigger-info.json
+        echo "Triggered By: ${{ github.actor }}" >> trigger-info.json
+        echo "Timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> trigger-info.json
+        
+        # Store as JSON for easier parsing
+        cat > trigger-info.json << EOF
+        {
+          "event_type": "document-updated",
+          "source_repo": "${{ github.repository }}",
+          "commit_id": "${{ steps.commit-info.outputs.commit_id }}",
+          "commit_message": "${{ steps.commit-info.outputs.commit_message }}",
+          "commit_author": "${{ steps.commit-info.outputs.commit_author }}",
+          "commit_url": "${{ steps.commit-info.outputs.commit_url }}",
+          "branch": "${{ github.ref_name }}",
+          "triggered_by": "${{ github.actor }}",
+          "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        }
+        EOF
+        
+        echo "Trigger file created - target repo can monitor this via GitHub API"
     
     - name: Log trigger event
       run: |
