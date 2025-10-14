@@ -19,6 +19,15 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
     
+    - name: Validate required secret
+      run: |
+        if [ -z "${{ secrets.CONTRACT_TERMS_PAT }}" ]; then
+          echo "Error: CONTRACT_TERMS_PAT secret is not set in this repository settings."
+          echo "Add it under Settings > Secrets and variables > Actions."
+          exit 1
+        fi
+        echo "Secret CONTRACT_TERMS_PAT is configured."
+    
     - name: Get commit information
       id: commit-info
       run: |
@@ -55,10 +64,28 @@ jobs:
         EOF
         
         echo "Trigger file created - target repo can monitor this via GitHub API"
-    
+
+    - name: Dispatch event to contract_terms repository
+      uses: peter-evans/repository-dispatch@v3
+      with:
+        token: ${{ secrets.CONTRACT_TERMS_PAT }}
+        repository: ERMInc/contract_terms
+        event-type: document-updated
+        client-payload: |
+          {
+            "source_repo": "${{ github.repository }}",
+            "commit_id": "${{ steps.commit-info.outputs.commit_id }}",
+            "commit_message": "${{ steps.commit-info.outputs.commit_message }}",
+            "commit_author": "${{ steps.commit-info.outputs.commit_author }}",
+            "commit_url": "${{ steps.commit-info.outputs.commit_url }}",
+            "branch": "${{ github.ref_name }}",
+            "triggered_by": "${{ github.actor }}",
+            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+
     - name: Log trigger event
       run: |
-        echo "Successfully triggered contract_terms workflow"
+        echo "Repository dispatch sent to ERMInc/contract_terms"
         echo "Source commit: ${{ steps.commit-info.outputs.commit_id }}"
         echo "Commit message: ${{ steps.commit-info.outputs.commit_message }}"
         echo "Branch: ${{ github.ref_name }}"
