@@ -7,48 +7,39 @@ on:
 
 permissions:
   contents: read
-  actions: write
-  
+
 jobs:
   trigger-contract-terms:
     runs-on: ubuntu-latest
-    
+
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
-    
+
     - name: Validate required secret
       run: |
         if [ -z "${{ secrets.CONTRACT_TERMS_PAT }}" ]; then
-          echo "Error: CONTRACT_TERMS_PAT secret is not set in this repository settings." >&2
+          echo "Error: CONTRACT_TERMS_PAT secret is not set." >&2
           exit 1
         fi
         echo "Secret CONTRACT_TERMS_PAT is configured."
 
-    - name: Quick diagnostics for PAT (no secrets printed)
+    - name: Basic PAT diagnostics
       id: pat-diagnostics
       env:
         GH_REPO: ERMInc/contract_terms
       run: |
         set -e
-        echo "Checking token basic scopes via /user endpoint..."
         user_status=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: token ${{ secrets.CONTRACT_TERMS_PAT }}" https://api.github.com/user)
+        echo "user_status=$user_status" >> $GITHUB_OUTPUT
         if [ "$user_status" != "200" ]; then
-          echo "user_endpoint=FAIL ($user_status)" >> $GITHUB_OUTPUT
-          echo "::warning::Token unable to access /user (status $user_status). Possibly invalid, expired, SSO not authorized, or fine-grained restrictions." 
-        else
-          echo "user_endpoint=OK" >> $GITHUB_OUTPUT
-        fi
-        echo "Checking repo dispatch permission (HEAD repo)..."
+          echo "::error::Token cannot access /user (status $user_status). Likely invalid / expired / SSO not authorized."; exit 1; fi
         repo_status=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: token ${{ secrets.CONTRACT_TERMS_PAT }}" https://api.github.com/repos/$GH_REPO)
+        echo "repo_status=$repo_status" >> $GITHUB_OUTPUT
         if [ "$repo_status" != "200" ]; then
-          echo "repo_access=FAIL ($repo_status)" >> $GITHUB_OUTPUT
-          echo "::warning::Token cannot read target repo ($repo_status). Ensure PAT owner has at least read access and SSO is authorized." 
-        else
-          echo "repo_access=OK" >> $GITHUB_OUTPUT
-        fi
-        echo "Diagnostics complete."        
-    
+          echo "::error::Token cannot read target repo (status $repo_status). Ensure PAT owner has access & repo selected (if fine-grained) & SSO authorized."; exit 1; fi
+        echo "Diagnostics passed."
+
     - name: Get commit information
       id: commit-info
       run: |
@@ -57,68 +48,42 @@ jobs:
         echo "commit_author=$(git log -1 --pretty=format:'%an')" >> $GITHUB_OUTPUT
         echo "commit_url=https://github.com/${{ github.repository }}/commit/${{ github.sha }}" >> $GITHUB_OUTPUT
         echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
-    
-    - name: Build dispatch payload
+
+    - name: Build payload
       id: build-payload
       run: |
         cat > payload.json <<EOF
         {
           "source_repo": "${{ github.repository }}",
           "commit_id": "${{ steps.commit-info.outputs.commit_id }}",
-          "commit_message": "${{ steps.commit-info.outputs.commit_message }}",
-          "commit_author": "${{ steps.commit-info.outputs.commit_author }}",
-          "commit_url": "${{ steps.commit-info.outputs.commit_url }}",
-          "branch": "${{ github.ref_name }}",
-          "triggered_by": "${{ github.actor }}",
-          "timestamp": "${{ steps.commit-info.outputs.timestamp }}"
+            "commit_message": "${{ steps.commit-info.outputs.commit_message }}",
+            "commit_author": "${{ steps.commit-info.outputs.commit_author }}",
+            "commit_url": "${{ steps.commit-info.outputs.commit_url }}",
+            "branch": "${{ github.ref_name }}",
+            "triggered_by": "${{ github.actor }}",
+            "timestamp": "${{ steps.commit-info.outputs.timestamp }}"
         }
         EOF
         echo "client_payload=$(jq -c . payload.json)" >> $GITHUB_OUTPUT
-        echo "Payload built:" && cat payload.json
-    
-    - name: Create trigger file for monitoring
-      run: |
-        cp payload.json trigger-info.json
-        echo "Trigger file created  target repo can monitor this via GitHub API"
+        cat payload.json
 
-    - name: Fail early if diagnostics show token issues
-      if: steps.pat-diagnostics.outputs.user_endpoint != 'OK' || steps.pat-diagnostics.outputs.repo_access != 'OK'
+    - name: Dispatch (curl)
+      id: raw-dispatch
       run: |
-        echo "Token diagnostics failed. See warnings above." >&2
-        exit 1
-
-    - name: Raw repository_dispatch probe
-      id: dispatch-probe
-      run: |
-        echo '{"event_type":"document-updated","client_payload":'$(cat payload.json)'}' > dispatch_request.json
-        status=$(curl -D headers.txt -s -o resp_body.json -w "%{http_code}" -X POST \
+        body=$(jq -c '{event_type:"document-updated", client_payload: .}' payload.json)
+        status=$(echo "$body" | curl -s -o resp_body.json -w "%{http_code}" -X POST \
           -H "Authorization: token ${{ secrets.CONTRACT_TERMS_PAT }}" \
           -H "Accept: application/vnd.github+json" \
           https://api.github.com/repos/ERMInc/contract_terms/dispatches \
-          -d @dispatch_request.json)
+          -d @-)
         echo "status=$status" >> $GITHUB_OUTPUT
-        echo "Response status: $status"
-        echo "--- Response headers ---"; cat headers.txt; echo "------------------------";
-        if [ -s resp_body.json ]; then
-          echo "--- Response body ---"; cat resp_body.json; echo "----------------------";
-          msg=$(jq -r '.message // empty' resp_body.json 2>/dev/null || true)
-          if [ -n "$msg" ]; then
-            echo "message=$msg" >> $GITHUB_OUTPUT
-          fi
-        else
-          echo "(Empty body)"
-        fi
+        echo "HTTP status: $status"
+        if [ -s resp_body.json ]; then echo "Response body:"; cat resp_body.json; fi
+        if [ "$status" != "204" ]; then
+          echo "::warning::Raw dispatch failed with status $status. Will attempt action fallback."; fi
 
-    - name: Identify token viewer (GraphQL)
-      if: steps.dispatch-probe.outputs.status != '204'
-      run: |
-        echo 'query { viewer { login, name, databaseId } }' > q.graphql
-        curl -s -H "Authorization: token ${{ secrets.CONTRACT_TERMS_PAT }}" -H "Accept: application/vnd.github+json" \
-          -X POST https://api.github.com/graphql -d @q.graphql > viewer.json || true
-        echo "Viewer info (may be empty if unauthorized):"; cat viewer.json
-
-    - name: Dispatch event to contract_terms repository (fallback action)
-      if: steps.dispatch-probe.outputs.status != '204'
+    - name: Dispatch (action fallback)
+      if: steps.raw-dispatch.outputs.status != '204'
       uses: peter-evans/repository-dispatch@v3
       with:
         token: ${{ secrets.CONTRACT_TERMS_PAT }}
@@ -126,16 +91,8 @@ jobs:
         event-type: document-updated
         client-payload: ${{ steps.build-payload.outputs.client_payload }}
 
-    - name: Fail if both raw and action dispatch failed
-      if: steps.dispatch-probe.outputs.status != '204' && failure()
+    - name: Final status
       run: |
-        echo "Both raw probe and action dispatch failed." >&2
-        exit 1
-
-    - name: Log trigger event
-      run: |
-        echo "Dispatch probe HTTP status: ${{ steps.dispatch-probe.outputs.status }}"
-        echo "Repository dispatch (raw) ${ { steps.dispatch-probe.outputs.status == '204' && 'succeeded' || 'attempted' } }"
-        echo "Source commit: ${{ steps.commit-info.outputs.commit_id }}"
-        echo "Commit message: ${{ steps.commit-info.outputs.commit_message }}"
-        echo "Branch: ${{ github.ref_name }}"
+        echo "Raw dispatch status: ${{ steps.raw-dispatch.outputs.status }}"
+        if [ "${{ steps.raw-dispatch.outputs.status }}" = "204" ]; then
+          echo "Dispatch succeeded via curl."; else echo "Fallback action used (check its step for result)."; fi
