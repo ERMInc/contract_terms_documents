@@ -81,7 +81,7 @@ jobs:
     - name: Create trigger file for monitoring
       run: |
         cp payload.json trigger-info.json
-        echo "Trigger file created - target repo can monitor this via GitHub API"
+        echo "Trigger file created  target repo can monitor this via GitHub API"
 
     - name: Fail early if diagnostics show token issues
       if: steps.pat-diagnostics.outputs.user_endpoint != 'OK' || steps.pat-diagnostics.outputs.repo_access != 'OK'
