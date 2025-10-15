@@ -24,23 +24,21 @@ jobs:
         fi
         echo "Secret CONTRACT_TERMS_PAT is configured."
 
-    - name: Basic PAT diagnostics
-      id: pat-diagnostics
+    - name: Basic token checks
+      id: token-check
       env:
         GH_REPO: ERMInc/contract_terms
       run: |
         set -e
         user_status=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: token ${{ secrets.CONTRACT_TERMS_PAT }}" https://api.github.com/user)
-        echo "user_status=$user_status" >> $GITHUB_OUTPUT
         if [ "$user_status" != "200" ]; then
-          echo "::error::Token cannot access /user (status $user_status). Likely invalid / expired / SSO not authorized."; exit 1; fi
+          echo "::error:: /user status $user_status (invalid / expired / SSO not authorized)."; exit 1; fi
         repo_status=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: token ${{ secrets.CONTRACT_TERMS_PAT }}" https://api.github.com/repos/$GH_REPO)
-        echo "repo_status=$repo_status" >> $GITHUB_OUTPUT
         if [ "$repo_status" != "200" ]; then
-          echo "::error::Token cannot read target repo (status $repo_status). Ensure PAT owner has access & repo selected (if fine-grained) & SSO authorized."; exit 1; fi
-        echo "Diagnostics passed."
+          echo "::error:: cannot read repo (status $repo_status) - missing repo selection or membership."; exit 1; fi
+        echo "Token visibility checks passed."
 
-    - name: Get commit information
+    - name: Collect commit info
       id: commit-info
       run: |
         echo "commit_id=${{ github.sha }}" >> $GITHUB_OUTPUT
@@ -56,43 +54,34 @@ jobs:
         {
           "source_repo": "${{ github.repository }}",
           "commit_id": "${{ steps.commit-info.outputs.commit_id }}",
-            "commit_message": "${{ steps.commit-info.outputs.commit_message }}",
-            "commit_author": "${{ steps.commit-info.outputs.commit_author }}",
-            "commit_url": "${{ steps.commit-info.outputs.commit_url }}",
-            "branch": "${{ github.ref_name }}",
-            "triggered_by": "${{ github.actor }}",
-            "timestamp": "${{ steps.commit-info.outputs.timestamp }}"
+          "commit_message": "${{ steps.commit-info.outputs.commit_message }}",
+          "commit_author": "${{ steps.commit-info.outputs.commit_author }}",
+          "commit_url": "${{ steps.commit-info.outputs.commit_url }}",
+          "branch": "${{ github.ref_name }}",
+          "triggered_by": "${{ github.actor }}",
+          "timestamp": "${{ steps.commit-info.outputs.timestamp }}"
         }
         EOF
         echo "client_payload=$(jq -c . payload.json)" >> $GITHUB_OUTPUT
-        cat payload.json
+        echo "Payload:"; cat payload.json
 
-    - name: Dispatch (curl)
-      id: raw-dispatch
+    - name: Dispatch event
+      id: dispatch
       run: |
         body=$(jq -c '{event_type:"document-updated", client_payload: .}' payload.json)
-        status=$(echo "$body" | curl -s -o resp_body.json -w "%{http_code}" -X POST \
+        status=$(echo "$body" | curl -s -D headers.txt -o resp_body.json -w "%{http_code}" -X POST \
           -H "Authorization: token ${{ secrets.CONTRACT_TERMS_PAT }}" \
           -H "Accept: application/vnd.github+json" \
           https://api.github.com/repos/ERMInc/contract_terms/dispatches \
           -d @-)
         echo "status=$status" >> $GITHUB_OUTPUT
         echo "HTTP status: $status"
+        echo "--- Response headers ---"; cat headers.txt; echo "------------------------";
         if [ -s resp_body.json ]; then echo "Response body:"; cat resp_body.json; fi
         if [ "$status" != "204" ]; then
-          echo "::warning::Raw dispatch failed with status $status. Will attempt action fallback."; fi
+          echo "::error:: Dispatch failed (status $status). Ensure PAT has Actions (read & write) permission or classic PAT includes workflow scope."; exit 1; fi
+        echo "Dispatch succeeded."
 
-    - name: Dispatch (action fallback)
-      if: steps.raw-dispatch.outputs.status != '204'
-      uses: peter-evans/repository-dispatch@v3
-      with:
-        token: ${{ secrets.CONTRACT_TERMS_PAT }}
-        repository: ERMInc/contract_terms
-        event-type: document-updated
-        client-payload: ${{ steps.build-payload.outputs.client_payload }}
-
-    - name: Final status
+    - name: Summary
       run: |
-        echo "Raw dispatch status: ${{ steps.raw-dispatch.outputs.status }}"
-        if [ "${{ steps.raw-dispatch.outputs.status }}" = "204" ]; then
-          echo "Dispatch succeeded via curl."; else echo "Fallback action used (check its step for result)."; fi
+        echo "Triggered document-updated in ERMInc/contract_terms"
